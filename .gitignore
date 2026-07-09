@@ -10,8 +10,12 @@ build/
 .venv/
 venv/
 
+# 数据库文件
+*.db
+*.sqlite
+
 # 输出文件
-output/*.json
+output/
 
 # IDE
 .vscode/
