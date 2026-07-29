@@ -681,8 +681,8 @@ if run_btn and script_text.strip():
 
         # Tab 5: Prompts
         with tabs[4]:
-            img_prompts = result["image_prompts"]["prompts"]
-            vid_prompts = result["video_prompts"]["video_prompts"]
+            img_prompts = result.get("image_prompts", {}).get("prompts", [])
+            vid_prompts = result.get("video_prompts", {}).get("video_prompts", [])
 
             st.markdown("#### 🖼️ 图片生成 Prompt")
             for p in img_prompts:

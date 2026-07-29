@@ -1014,8 +1014,8 @@ class ShortDramaPipeline:
 
         # Phase 5.x: Prompt 解析降级恢复（从 storyboard 生成 fallback prompt）
         shots = storyboard.get("storyboard", [])
-        if image_prompts.get("parse_fallback") and shots:
-            logger.warning(f"图片 Prompt 解析失败，从 {len(shots)} 个分镜生成 fallback")
+        if (image_prompts.get("parse_fallback") or not image_prompts.get("prompts")) and shots:
+            logger.warning(f"图片 Prompt 缺失/解析失败，从 {len(shots)} 个分镜生成 fallback")
             image_prompts = {
                 "prompts": [
                     {"shot_id": s.get("shot_id", f"shot_{i+1:03d}"),
@@ -1028,8 +1028,8 @@ class ShortDramaPipeline:
                 ],
                 "parse_fallback": True,
             }
-        if video_prompts.get("parse_fallback") and shots:
-            logger.warning(f"视频 Prompt 解析失败，从 {len(shots)} 个分镜生成 fallback")
+        if (video_prompts.get("parse_fallback") or not video_prompts.get("video_prompts")) and shots:
+            logger.warning(f"视频 Prompt 缺失/解析失败，从 {len(shots)} 个分镜生成 fallback")
             video_prompts = {
                 "video_prompts": [
                     {"shot_id": s.get("shot_id", f"shot_{i+1:03d}"),
