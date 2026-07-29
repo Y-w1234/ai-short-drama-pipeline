@@ -528,28 +528,74 @@ def preprocess(script_text: str) -> dict:
 
 
 def extract_json_from_llm(raw: str) -> dict:
-    """从 LLM 原始输出中提取 JSON（容错处理）"""
+    """从 LLM 原始输出中提取 JSON（多层容错处理）。
+
+    策略层级:
+    1. 去除所有 markdown 代码块包裹（处理多层 ```json 嵌套）
+    2. 直接 json.loads 解析
+    3. 匹配 { 到 } 的完整 JSON 块
+    4. 末行兜底: 从末尾反向搜索，取最后一个 { 到 } 的完整块
+    """
     text = raw.strip()
-    # 去除 markdown 代码块包裹
-    for fence in ["```json", "```"]:
-        if fence in text:
-            parts = text.split(fence)
-            text = parts[1] if len(parts) >= 2 else text
-            if "```" in text:
-                text = text.split("```")[0]
+    if not text:
+        return {"raw_output": raw, "parse_error": True}
+
+    # 1. 去除所有 markdown 代码块（处理多层嵌套）
+    while "```" in text:
+        # 找到第一个 ``` 到下一个 ``` 之间的内容
+        idx_start = text.find("```")
+        if idx_start == -1:
             break
+        # 跳过 ``` 标记行（可能带 json 语言标识）
+        line_end = text.find("\n", idx_start)
+        if line_end == -1:
+            text = text[:idx_start]
+            break
+        idx_end = text.find("```", line_end + 1)
+        if idx_end == -1:
+            # 只有一个 ```，去除它及其之前的内容
+            text = text[line_end + 1:]
+            break
+        # 提取 ```...``` 中的内容
+        text = text[line_end + 1:idx_end].strip()
+        # 继续循环，处理可能的多层嵌套
+
+    # 2. 直接解析
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
-        # 尝试匹配第一个 { 和最后一个 }
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                pass
-        return {"raw_output": raw, "parse_error": True}
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 3. 匹配第一个 { 到最后一个 } 之间的内容
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # 4. 末行兜底: 反向搜索，取最后一个 { 到 } 块
+    #   处理 LLM 在末尾附加解释性文本的情况
+    #   例如: "好的，这是结果：\n{valid json}\n希望有用"
+    for ch in range(len(text) - 1, max(len(text) - 500, 0), -1):
+        if text[ch] == "}":
+            # 从这个 } 反向找 {（简单括号匹配）
+            depth = 0
+            for j in range(ch, -1, -1):
+                if text[j] == "}":
+                    depth += 1
+                elif text[j] == "{":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[j:ch + 1])
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        break
+            break  # 只尝试最后一个 } 块
+
+    return {"raw_output": raw, "parse_error": True}
 
 
 def parse_character(raw: str) -> dict:
@@ -666,16 +712,23 @@ def parse_storyboard(raw: str) -> dict:
 
 
 def parse_image_prompts(raw: str) -> dict:
+    """Phase 5: 图片 Prompt 解析（增强容错 + 软失败）。
+    图片 Prompt 属于生成阶段，非数据提取阶段——解析失败时降级为空列表，
+    由管线层从 storyboard 生成 fallback prompt，不阻断整个流水线。"""
     data = extract_json_from_llm(raw)
     if data.get("parse_error"):
-        raise RuntimeError("图片 Prompt 数据 JSON 解析失败: LLM 返回了无法解析的输出")
+        logger.warning("图片 Prompt JSON 解析失败，使用空列表（管线将生成 fallback）")
+        return {"prompts": [], "parse_fallback": True}
     return data
 
 
 def parse_video_prompts(raw: str) -> dict:
+    """Phase 6: 视频 Prompt 解析（增强容错 + 软失败）。
+    同上——解析失败时降级为空列表，由管线层生成 fallback。"""
     data = extract_json_from_llm(raw)
     if data.get("parse_error"):
-        raise RuntimeError("视频 Prompt 数据 JSON 解析失败: LLM 返回了无法解析的输出")
+        logger.warning("视频 Prompt JSON 解析失败，使用空列表（管线将生成 fallback）")
+        return {"video_prompts": [], "parse_fallback": True}
     return data
 
 
@@ -958,6 +1011,36 @@ class ShortDramaPipeline:
 
         image_prompts = results_5_6["image_prompts"]
         video_prompts = results_5_6["video_prompts"]
+
+        # Phase 5.x: Prompt 解析降级恢复（从 storyboard 生成 fallback prompt）
+        shots = storyboard.get("storyboard", [])
+        if image_prompts.get("parse_fallback") and shots:
+            logger.warning(f"图片 Prompt 解析失败，从 {len(shots)} 个分镜生成 fallback")
+            image_prompts = {
+                "prompts": [
+                    {"shot_id": s.get("shot_id", f"shot_{i+1:03d}"),
+                     "prompt_cn": f"影视级现实主义，电影质感，{s.get('visual_description','')[:80]}，8K超清，专业布光",
+                     "prompt_en": f"cinematic photorealistic, 8k, professional lighting, {s.get('visual_description','')[:80]}",
+                     "negative_prompt": "blur, deformed, extra fingers, text artifacts, anime, cartoon",
+                     "style_tags": ["cinematic", "photorealistic", "professional lighting"],
+                     "aspect_ratio": "16:9"}
+                    for i, s in enumerate(shots)
+                ],
+                "parse_fallback": True,
+            }
+        if video_prompts.get("parse_fallback") and shots:
+            logger.warning(f"视频 Prompt 解析失败，从 {len(shots)} 个分镜生成 fallback")
+            video_prompts = {
+                "video_prompts": [
+                    {"shot_id": s.get("shot_id", f"shot_{i+1:03d}"),
+                     "prompt": f"cinematic video, smooth camera movement, photorealistic, 24fps, {s.get('visual_description','')[:100]}",
+                     "motion_description": s.get("camera_movement", "自然动作流畅"),
+                     "camera_motion": s.get("camera_movement", "固定"),
+                     "duration_seconds": s.get("duration_seconds", 4)}
+                    for i, s in enumerate(shots)
+                ],
+                "parse_fallback": True,
+            }
 
         self.log(5, f"Prompt 并行生成完成: "
                      f"{len(image_prompts.get('prompts', []))} 条图片, "

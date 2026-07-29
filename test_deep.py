@@ -105,27 +105,31 @@ try:
 except RuntimeError:
     print("  PASS: Non-int total rejected")
 
-# C4: 剩余 3 个数据解析器(Phase 1-6)的 parse_error 硬阻断
-for name, parser, label in [
-    ("parse_storyboard", parse_storyboard, "分镜"),
-    ("parse_image_prompts", parse_image_prompts, "图片Prompt"),
-    ("parse_video_prompts", parse_video_prompts, "视频Prompt"),
-]:
-    try:
-        result = parser("not valid json {{{")
-        ok = "parse_error" in inspect.getsource(parser)
-        if not ok:
-            print(f"  FAIL: {name} missing parse_error guard")
-        else:
-            print(f"  PASS: {name} has parse_error guard")
-    except RuntimeError:
-        print(f"  PASS: {name} blocks with RuntimeError")
+# C4: parse_storyboard — 硬阻断（Phase 1-4 是数据提取阶段）
+try:
+    parse_storyboard("not valid json {{{")
+    ok = "parse_error" in inspect.getsource(parse_storyboard)
+    assert ok, "parse_storyboard missing parse_error guard"
+    print("  PASS: parse_storyboard has parse_error guard")
+except RuntimeError:
+    print("  PASS: parse_storyboard blocks with RuntimeError")
 
-# C5: parse_qc_report 使用软失败（QC 是质量审核而非数据提取）
+# C5: parse_image_prompts / parse_video_prompts — 软失败 + fallback
+img = parse_image_prompts("not valid json")
+assert img.get("parse_fallback") is True, "image_prompts should set parse_fallback"
+assert img.get("prompts") == [], "image_prompts should return empty prompts"
+print("  PASS: parse_image_prompts soft-fails with parse_fallback=True")
+
+vid = parse_video_prompts("not valid json")
+assert vid.get("parse_fallback") is True, "video_prompts should set parse_fallback"
+assert vid.get("video_prompts") == [], "video_prompts should return empty prompts"
+print("  PASS: parse_video_prompts soft-fails with parse_fallback=True")
+
+# C6: parse_qc_report 软失败
 qc_result = parse_qc_report("not valid json")
 assert qc_result["overall_score"] == 3.0
 assert "QC 解析异常" in qc_result["verdict"]
-print("  PASS: parse_qc_report soft-fails with default score 3.0 (advisory, not blocking)")
+print("  PASS: parse_qc_report soft-fails with default score 3.0")
 
 # ================================================================
 # D. 路径安全: 深度边界
@@ -203,7 +207,7 @@ for name in ["parse_character", "parse_scene", "parse_props",
         if name == "parse_character":
             has_check = "validate_character_output" in src
         else:
-            has_check = "parse_error" in src
+            has_check = "parse_error" in src or "parse_fallback" in src or "logger.warning" in src
         if has_check:
             parsers_ok += 1
 assert parsers_ok == 7, f"Only {parsers_ok}/7 parsers check parse_error"
