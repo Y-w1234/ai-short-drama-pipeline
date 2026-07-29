@@ -72,7 +72,7 @@ LLM_PROVIDERS = {
     },
     "doubao": {
         "name": "豆包 (Doubao)",
-        "model": "doubao-1-5-pro-32k-250115",
+        "model": "ep-20260729132149-9c8h5",
         "price_input": 0.8,
         "price_output": 2.0,
         "free_credits": "字节跳动 ARK 新人额度",
@@ -227,31 +227,64 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
+# API Key 检测 & 智能提供商推荐
+# ═══════════════════════════════════════════════════════════════
+def detect_available_keys() -> dict:
+    """检测所有已配置的 API Key"""
+    result = {}
+    for pid, pinfo in LLM_PROVIDERS.items():
+        result[pid] = bool(os.environ.get(pinfo["env_key"], "").strip())
+    return result
+
+def recommend_provider(key_status: dict) -> str:
+    """智能推荐: 有 Key > 免费用量大 > 成本低"""
+    available = [pid for pid, ok in key_status.items() if ok]
+    if available:
+        return available[0]  # 第一个可用的
+    return "deepseek"  # 默认（Demo 模式）
+
+# ═══════════════════════════════════════════════════════════════
 # Sidebar
 # ═══════════════════════════════════════════════════════════════
+key_status = detect_available_keys()
+
 with st.sidebar:
     st.markdown("## 🎬 工作台")
+
+    # ── API Key 概览 ──
+    st.markdown("### 🔑 API Keys")
+    for pid, ok in key_status.items():
+        pinfo = LLM_PROVIDERS[pid]
+        icon = "🟢" if ok else "🔴"
+        st.caption(f"{icon} {pinfo['name']}: {'已连接' if ok else '未设置'}")
 
     # ── LLM 选择 ──
     st.markdown("### 🤖 LLM 提供商")
     tabs_llm = st.tabs(["快速选择", "详细对比"])
 
     with tabs_llm[0]:
+        recommended = recommend_provider(key_status)
+        options = ["deepseek", "doubao"]
+        default_idx = options.index(recommended)
+
         provider = st.selectbox(
             "选择模型",
-            options=["deepseek", "doubao"],
+            options=options,
             format_func=lambda x: f"{LLM_PROVIDERS[x]['name']} ({LLM_PROVIDERS[x]['model']})",
-            index=0,
-            help="DeepSeek 注册送 500 万 tokens 免费额度",
+            index=default_idx,
+            help=f"智能推荐: {LLM_PROVIDERS[recommended]['name']}",
         )
-        # 环境变量检测
+
         env_key = LLM_PROVIDERS[provider]["env_key"]
-        has_key = bool(os.environ.get(env_key, ""))
+        env_val = os.environ.get(env_key, "").strip()
+        has_key = bool(env_val)
+
         if has_key:
-            st.success(f"已检测到 {env_key}")
+            masked = env_val[:8] + "..." + env_val[-4:] if len(env_val) > 12 else "***"
+            st.success(f"已连接 {env_key} ({masked})")
         else:
-            st.warning(f"未检测到 {env_key} - 将使用 Demo 模式")
-            st.caption(f"[获取 Key]({LLM_PROVIDERS[provider]['url']})")
+            st.warning(f"{env_key} 未设置 — Demo 模式")
+            st.caption(f"[获取 {LLM_PROVIDERS[provider]['name']} Key]({LLM_PROVIDERS[provider]['url']})")
 
     with tabs_llm[1]:
         cols = st.columns(len(LLM_PROVIDERS))

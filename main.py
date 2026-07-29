@@ -40,7 +40,7 @@ CONFIG = {
     },
     "doubao": {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-        "model": "doubao-1-5-pro-32k-250115",
+        "model": "ep-20260729132149-9c8h5",
         "api_key_env": "DOUBAO_API_KEY",
     },
 }
